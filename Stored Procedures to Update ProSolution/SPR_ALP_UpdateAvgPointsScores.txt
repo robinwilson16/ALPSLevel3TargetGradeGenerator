@@ -1,0 +1,113 @@
+/*
+Inserts the Average GCSE Score (used by ALPS) into StudentDetail UserDefined23
+Ensure this field does not contain existing data and, if it does, switch to using another vacant field
+*/
+
+CREATE PROCEDURE SPR_ALP_UpdateAvgPointsScores
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+	WITH EarliestStart AS (
+		SELECT
+			SD.StudentID,
+			EarliestStartDate = MIN ( ENR.StartDate )
+		FROM ProSolution.dbo.StudentDetail SD
+		INNER JOIN ProSolution.dbo.Enrolment ENR
+			ON ENR.StudentDetailID = SD.StudentDetailID
+		WHERE
+			ENR.CompletionStatusID IN ( '1', '2', '3' )
+			AND ENR.IncludeInReturn = 1
+		GROUP BY
+			SD.StudentID
+	),
+	Rankings AS (
+		SELECT
+			GRA.Subject,
+			GRA.TargetGrade,
+			GradeRank = ROW_NUMBER () OVER ( PARTITION BY GRA.Subject ORDER BY GRA.MaxPoints )
+		FROM (
+			SELECT
+				TAR.Subject,
+				TAR.TargetGrade,
+				MaxPoints = MAX ( TAR.MaxPoints )
+			FROM ALPS_TargetSetting TAR
+			GROUP BY
+				TAR.Subject,
+				TAR.TargetGrade
+		) GRA
+	)
+
+	UPDATE SD
+	SET
+		SD.UserDefined23 = FORMAT ( PLR.AvgGCSE, '#0.00' )
+	FROM ProSolution.dbo.StudentDetail SD
+	INNER JOIN (
+		SELECT
+			StudentID = QOE.StudentID,
+			NumGCSEs = COUNT ( QOE.StudentID ),
+			AvgGCSE = ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( COUNT ( QOE.StudentID ) AS FLOAT ), 2 )
+		FROM (
+			SELECT DISTINCT
+				PLR.StudentID,
+				PLRD.SourceQualificationCode,
+				PLRD.QualificationTitle,
+				PLRD.AwardDate,
+				PLRD.Grade,
+				GCSE.Points,
+				GradeOrder = 
+					ROW_NUMBER () OVER ( 
+						PARTITION BY 
+							PLR.StudentID, 
+							PLRD.SourceQualificationCode
+						ORDER BY 
+							CASE
+								WHEN PLRD.Grade = 'A*' THEN 1
+								ELSE 2
+							END,
+							PLRD.Grade 
+					)
+			FROM ProSolution.dbo.StudentDetail SD
+			INNER JOIN ProSolution.dbo.PLRDownload PLR
+				ON PLR.StudentID = SD.StudentID
+			INNER JOIN ProSolution.dbo.PLRLearnerEventDownload PLRD
+				ON PLRD.PLRDownloadID = PLR.PLRDownloadID
+			INNER JOIN EarliestStart EAR
+				ON EAR.StudentID = PLR.StudentID
+			INNER JOIN ALPS_GCSEPoints GCSE
+				ON GCSE.Grade = PLRD.Grade
+			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
+				ON AIM.LEARNING_AIM_REF = PLRD.SourceQualificationCode
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'PMO_AcademicYearID'
+				)
+				AND (
+					PLRD.QualificationTitle LIKE '%GCSE%'
+					OR AIM.LEARNING_AIM_TITLE LIKE '%GCSE%'
+				)
+				AND PLRD.AwardDate IS NOT NULL
+				AND PLRD.AwardDate < EAR.EarliestStartDate
+				--AND SD.RefNo = '863769'
+		) QOE
+		WHERE
+			QOE.GradeOrder = 1
+			--AND QOE.StudentID = 75672
+		GROUP BY
+			QOE.StudentID
+	) PLR
+		ON PLR.StudentID = SD.StudentID
+	WHERE
+		SD.AcademicYearID = (
+			SELECT
+				CFG.Value
+			FROM Config CFG
+			WHERE
+				CFG.ConfigID = 'PMO_AcademicYearID'
+		)
+		AND COALESCE ( SD.UserDefined23, '' ) <> COALESCE ( FORMAT ( PLR.AvgGCSE, '#0.00' ), '' ) --Not already recorded
+END

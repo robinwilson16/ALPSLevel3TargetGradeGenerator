@@ -1,0 +1,5 @@
+EXEC SPR_ALP_UpdateAvgPointsScores;
+GO;
+
+EXEC SPR_ALP_UpdateTargetGrades
+GO;

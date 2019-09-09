@@ -1,0 +1,153 @@
+/*
+Inserts the ALPS Target Grade and Target Points into Enrolment UserDefined14 and UserDefined15
+Ensure these fields do not contain existing data and, if they do, switch to using other vacant fields
+*/
+
+CREATE PROCEDURE SPR_ALP_UpdateTargetGrades
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+	WITH EarliestStart AS (
+		SELECT
+			SD.StudentID,
+			EarliestStartDate = MIN ( ENR.StartDate )
+		FROM ProSolution.dbo.StudentDetail SD
+		INNER JOIN ProSolution.dbo.Enrolment ENR
+			ON ENR.StudentDetailID = SD.StudentDetailID
+		WHERE
+			ENR.CompletionStatusID IN ( '1', '2', '3' )
+			AND ENR.IncludeInReturn = 1
+		GROUP BY
+			SD.StudentID
+	),
+	Rankings AS (
+		SELECT
+			GRA.Subject,
+			GRA.TargetGrade,
+			GradeRank = ROW_NUMBER () OVER ( PARTITION BY GRA.Subject ORDER BY GRA.MaxPoints )
+		FROM (
+			SELECT
+				TAR.Subject,
+				TAR.TargetGrade,
+				MaxPoints = MAX ( TAR.MaxPoints )
+			FROM ALPS_TargetSetting TAR
+			GROUP BY
+				TAR.Subject,
+				TAR.TargetGrade
+		) GRA
+	)
+
+	UPDATE ENR
+	SET
+		--***Update fields if required***
+		UserDefined14 = TAR.TargetGrade,
+		UserDefined15 = CAST ( CAST ( TAR.Points AS INT ) AS VARCHAR(20) )
+	FROM ProSolution.dbo.StudentDetail SD
+	INNER JOIN ProSolution.dbo.Enrolment ENR
+		ON ENR.StudentDetailID = SD.StudentDetailID
+	INNER JOIN ProSolution.dbo.Offering CRS
+		ON CRS.OfferingID = ENR.OfferingID
+	INNER JOIN ProSolution.dbo.Learning_Aim AIM
+		ON AIM.LEARNING_AIM_REF = CRS.QualID
+	INNER JOIN ALPS_AimTypeMapping ATM
+		ON ATM.LearnAimRefType =
+			CASE
+				WHEN AIM.learning_aim_title LIKE '%Extended Diploma%' THEN '1428'
+				WHEN AIM.learning_aim_title LIKE '%90-credit%' THEN '90'
+				WHEN AIM.learning_aim_title LIKE '%Foundation%' THEN '90'
+				ELSE AIM.learning_aim_type_code
+			END
+	LEFT JOIN (
+		SELECT
+			StudentID = QOE.StudentID,
+			NumGCSEs = COUNT ( QOE.StudentID ),
+			AvgGCSE = ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( COUNT ( QOE.StudentID ) AS FLOAT ), 2 )
+		FROM (
+			SELECT DISTINCT
+				PLR.StudentID,
+				PLRD.SourceQualificationCode,
+				PLRD.QualificationTitle,
+				PLRD.AwardDate,
+				PLRD.Grade,
+				GCSE.Points,
+				GradeOrder = 
+					ROW_NUMBER () OVER ( 
+						PARTITION BY 
+							PLR.StudentID, 
+							PLRD.SourceQualificationCode
+						ORDER BY 
+							CASE
+								WHEN PLRD.Grade = 'A*' THEN 1
+								ELSE 2
+							END,
+							PLRD.Grade 
+					)
+			FROM ProSolution.dbo.StudentDetail SD
+			INNER JOIN ProSolution.dbo.PLRDownload PLR
+				ON PLR.StudentID = SD.StudentID
+			INNER JOIN ProSolution.dbo.PLRLearnerEventDownload PLRD
+				ON PLRD.PLRDownloadID = PLR.PLRDownloadID
+			INNER JOIN EarliestStart EAR
+				ON EAR.StudentID = PLR.StudentID
+			INNER JOIN ALPS_GCSEPoints GCSE
+				ON GCSE.Grade = PLRD.Grade
+			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
+				ON AIM.LEARNING_AIM_REF = PLRD.SourceQualificationCode
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'PMO_AcademicYearID'
+				)
+				AND (
+					PLRD.QualificationTitle LIKE '%GCSE%'
+					OR AIM.LEARNING_AIM_TITLE LIKE '%GCSE%'
+				)
+				AND PLRD.AwardDate IS NOT NULL
+				AND PLRD.AwardDate < EAR.EarliestStartDate
+		) QOE
+		WHERE
+			QOE.GradeOrder = 1
+		GROUP BY
+			QOE.StudentID
+	) PLR
+		ON PLR.StudentID = SD.StudentID
+	LEFT JOIN ALPS_TargetSetting TAR
+		ON TAR.Subject = COALESCE ( ATM.Subject, 'Sub Dip/Ext Cert' )
+		AND PLR.AvgGCSE BETWEEN TAR.MinPoints AND TAR.MaxPoints
+	LEFT JOIN (
+		SELECT
+			RNK1.Subject,
+			RNK1.TargetGrade,
+			RNK1.GradeRank,
+			MaxRank = MAX ( RNK2.GradeRank ),
+			TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
+		FROM Rankings RNK1
+		INNER JOIN Rankings RNK2
+			ON RNK2.Subject = RNK1.Subject
+		GROUP BY
+			RNK1.Subject,
+			RNK1.TargetGrade,
+			RNK1.GradeRank
+	) PER
+		ON PER.Subject = TAR.Subject
+		AND PER.TargetGrade = TAR.TargetGrade
+	WHERE
+		SD.AcademicYearID = (
+			SELECT
+				CFG.Value
+			FROM Config CFG
+			WHERE
+				CFG.ConfigID = 'PMO_AcademicYearID'
+		)
+		AND CRS.OfferingStatusID IN ( '1', '3' ) --Live and pending only
+		AND AIM.NOTIONAL_NVQ_LEVEL_CODE = '3'
+		AND (
+			--***Update fields if required***
+			COALESCE ( ENR.UserDefined14, '' ) <> COALESCE ( TAR.TargetGrade, '' )
+			OR COALESCE ( ENR.UserDefined15, '' ) <> COALESCE ( CAST ( CAST ( TAR.Points AS INT ) AS VARCHAR(20) ), '' )
+		)
+END
