@@ -15,7 +15,8 @@ Academic:
 ![A Level ALPS Table](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/A%20Level.png)
 
 BTEC:
-Image
+![BTEC ALPS Table 1](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/BTEC1.png)
+![BTEC ALPS Table 2](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/BTEC2.png)
 
 **Setting Up**
 
@@ -49,4 +50,4 @@ Ensure the grade and points are correct as these are the most likely thing to ha
 Next open the table called `GradePoints` used to calculate the average GCSE score (will not be needed once everything is reformed and 1-9)
 Ensure each grade has the correct grade points mapping. This information is in `Benchmark Update - England`
 
-Image Here
+![GCSE Mapping Letters to Numerical Grades](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/GCSEs.png)
