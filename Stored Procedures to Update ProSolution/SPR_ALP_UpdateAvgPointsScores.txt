@@ -8,35 +8,19 @@ AS
 BEGIN
 	SET NOCOUNT ON;
 
-	WITH EarliestStart AS (
-		SELECT
-			SD.StudentID,
-			EarliestStartDate = MIN ( ENR.StartDate )
-		FROM ProSolution.dbo.StudentDetail SD
-		INNER JOIN ProSolution.dbo.Enrolment ENR
-			ON ENR.StudentDetailID = SD.StudentDetailID
-		WHERE
-			ENR.CompletionStatusID IN ( '1', '2', '3' )
-			AND ENR.IncludeInReturn = 1
-		GROUP BY
-			SD.StudentID
-	),
-	Rankings AS (
-		SELECT
-			GRA.Subject,
-			GRA.TargetGrade,
-			GradeRank = ROW_NUMBER () OVER ( PARTITION BY GRA.Subject ORDER BY GRA.MaxPoints )
-		FROM (
-			SELECT
-				TAR.Subject,
-				TAR.TargetGrade,
-				MaxPoints = MAX ( TAR.MaxPoints )
-			FROM ALPS_TargetSetting TAR
-			GROUP BY
-				TAR.Subject,
-				TAR.TargetGrade
-		) GRA
-	)
+	DROP TABLE IF EXISTS #EarliestStart
+	SELECT
+		SD.StudentID,
+		EarliestStartDate = MIN ( ENR.StartDate )
+		INTO #EarliestStart
+	FROM ProSolution.dbo.StudentDetail SD
+	INNER JOIN ProSolution.dbo.Enrolment ENR
+		ON ENR.StudentDetailID = SD.StudentDetailID
+	WHERE
+		ENR.CompletionStatusID IN ( '1', '2', '3' )
+		AND ENR.IncludeInReturn = 1
+	GROUP BY
+		SD.StudentID
 
 	UPDATE SD
 	SET
@@ -54,7 +38,7 @@ BEGIN
 				PLRD.QualificationTitle,
 				PLRD.AwardDate,
 				PLRD.Grade,
-				GCSE.Points,
+				GP.Points,
 				GradeOrder = 
 					ROW_NUMBER () OVER ( 
 						PARTITION BY 
@@ -72,10 +56,11 @@ BEGIN
 				ON PLR.StudentID = SD.StudentID
 			INNER JOIN ProSolution.dbo.PLRLearnerEventDownload PLRD
 				ON PLRD.PLRDownloadID = PLR.PLRDownloadID
-			INNER JOIN EarliestStart EAR
+			INNER JOIN #EarliestStart EAR
 				ON EAR.StudentID = PLR.StudentID
-			INNER JOIN ALPS_GCSEPoints GCSE
-				ON GCSE.Grade = PLRD.Grade
+			INNER JOIN GradePoints GP
+				ON GP.Grade = PLRD.Grade
+				AND GP.QualType = 'G'
 			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
 				ON AIM.LEARNING_AIM_REF = PLRD.SourceQualificationCode
 			WHERE

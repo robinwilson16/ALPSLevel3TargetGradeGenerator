@@ -1,0 +1,1480 @@
+CREATE PROCEDURE SPR_PMO_Target
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+	DROP TABLE IF EXISTS #EarliestStart
+	SELECT
+		SD.StudentID,
+		EarliestStartDate = MIN ( ENR.StartDate )
+		INTO #EarliestStart
+	FROM ProSolution.dbo.StudentDetail SD
+	INNER JOIN ProSolution.dbo.Enrolment ENR
+		ON ENR.StudentDetailID = SD.StudentDetailID
+	WHERE
+		ENR.CompletionStatusID IN ( '1', '2', '3' )
+		AND ENR.IncludeInReturn = 1
+	GROUP BY
+		SD.StudentID
+
+
+	DROP TABLE IF EXISTS #Rankings
+	SELECT
+		GRA.Subject,
+		GRA.TargetGrade,
+		GradeRank = ROW_NUMBER () OVER ( PARTITION BY GRA.Subject ORDER BY GRA.MaxPoints )
+		INTO #Rankings
+	FROM (
+		SELECT
+			TAR.Subject,
+			TAR.TargetGrade,
+			MaxPoints = MAX ( TAR.MaxPoints )
+		FROM ALPS_TargetSetting TAR
+		GROUP BY
+			TAR.Subject,
+			TAR.TargetGrade
+	) GRA
+
+
+	DROP TABLE IF EXISTS #RankingsGCSE
+	SELECT
+		GRA.Grade,
+		GradeRank = ROW_NUMBER () OVER ( ORDER BY GRA.MaxPoints )
+		INTO #RankingsGCSE
+	FROM (
+		SELECT
+			GP.Grade,
+			MaxPoints = MAX ( GP.Points )
+		FROM GradePoints GP
+		WHERE
+			GP.QualType = 'G'
+			AND GP.Grade BETWEEN '1' AND '9'
+		GROUP BY
+			GP.Grade
+	) GRA
+
+
+	DROP TABLE IF EXISTS #QOEs
+	SELECT
+		QOE.StudentDetailID,
+		EngGCSEGrade = MAX ( CASE WHEN QOE.Subject = 'EngGCSE' THEN QOE.Grade ELSE NULL END ),
+		EngGCSEPoints = MAX ( CASE WHEN QOE.Subject = 'EngGCSE' THEN QOE.GradePoints ELSE NULL END ),
+		EngGCSEDate = MAX ( CASE WHEN QOE.Subject = 'EngGCSE' THEN QOE.DateAwarded ELSE NULL END ),
+		MathsGCSEGrade = MAX ( CASE WHEN QOE.Subject = 'MathsGCSE' THEN QOE.Grade ELSE NULL END ),
+		MathsGCSEPoints = MAX ( CASE WHEN QOE.Subject = 'MathsGCSE' THEN QOE.GradePoints ELSE NULL END ),
+		MathsGCSEDate = MAX ( CASE WHEN QOE.Subject = 'MathsGCSE' THEN QOE.DateAwarded ELSE NULL END )
+		INTO #QOEs
+	FROM (
+		SELECT
+			QOE.StudentDetailID,
+			QOE.DataSource,
+			QOE.Subject,
+			QOE.AimCode,
+			QOE.AimTitle,
+			QOE.AimLevel,
+			QOE.Grade,
+			QOE.GradePoints,
+			QOE.DateAwarded,
+			RowNum = 
+				ROW_NUMBER () OVER (
+					PARTITION BY
+						QOE.StudentDetailID,
+						QOE.Subject
+					ORDER BY
+						QOE.GradePoints DESC,
+						CASE WHEN QOE.Grade = 'FL' THEN 2 ELSE 1 END, --Ensure fails are last
+						CASE WHEN QOE.AimLevel = 'E' THEN '0' ELSE QOE.AimLevel END DESC,
+						CASE WHEN QOE.Grade BETWEEN '1' AND '9' THEN 1 ELSE 2 END, --Prioritise reformed grades
+						CASE WHEN LEN ( QOE.Grade ) > 1 AND QOE.Grade LIKE 'E%' THEN RIGHT ( QOE.Grade, 1 ) ELSE '4' END DESC, --Entry levels need to be in desc order
+						QOE.Grade,
+						CASE WHEN QOE.DataSource = 'COF' THEN 2 ELSE 1 END,
+						QOE.DateAwarded DESC
+				)
+		FROM (
+
+			SELECT
+				StudentDetailID = SD.StudentDetailID,
+				DataSource = 'PLR',
+				Subject = 
+					CASE 
+						WHEN 
+							(
+								PLRD.QualificationTitle LIKE '%English%'
+								OR AIM.LEARNING_AIM_TITLE LIKE '%English%'
+							)
+							AND (
+								PLRD.QualificationTitle LIKE '%GCSE%'
+								OR AIM.LEARNING_AIM_TITLE LIKE '%GCSE%'
+								OR AIM.LEARNING_AIM_TYPE_CODE = '0003'
+							)
+							THEN 'EngGCSE'
+						WHEN 
+							(
+								PLRD.QualificationTitle LIKE '%Math%'
+								OR AIM.LEARNING_AIM_TITLE LIKE '%Math%'
+							)
+							AND (
+								PLRD.QualificationTitle LIKE '%GCSE%'
+								OR AIM.LEARNING_AIM_TITLE LIKE '%GCSE%'
+								OR AIM.LEARNING_AIM_TYPE_CODE = '0003'
+							)
+							THEN 'MathsGCSE'
+						ELSE 'X'
+					END,
+				AimCode = PLRD.SourceQualificationCode,
+				AimTitle = PLRD.QualificationTitle,
+				AimLevel = AIM.NOTIONAL_NVQ_LEVEL_CODE,
+				Grade = PLRD.Grade,
+				GradePoints = ALPS.Points,
+				DateAwarded = PLRD.AwardDate
+			FROM ProSolution.dbo.StudentDetail SD
+			INNER JOIN ProSolution.dbo.PLRDownload PLR
+				ON PLR.StudentID = SD.StudentID
+			INNER JOIN ProSolution.dbo.PLRLearnerEventDownload PLRD
+				ON PLRD.PLRDownloadID = PLR.PLRDownloadID
+			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
+				ON AIM.LEARNING_AIM_REF = PLRD.SourceQualificationCode
+			LEFT JOIN GradePoints ALPS
+				ON ALPS.Grade = 
+					CASE
+						WHEN PLRD.Grade LIKE '%-%' THEN LEFT ( PLRD.Grade, 1 )
+						ELSE PLRD.Grade
+					END
+				AND ALPS.QualType = 'G'
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'PMO_AcademicYearID'
+				)
+				AND PLRD.AwardDate IS NOT NULL
+				AND COALESCE ( PLRD.Grade, 'NONE' ) NOT IN ( '', 'NONE', 'X', 'Unclassified', '#Unclassified' )
+				AND PLRD.SourceQualificationCode IS NOT NULL
+				--AND SD.RefNo = 'CRE12007964'
+
+			UNION ALL
+
+			SELECT
+				StudentDetailID = SD.StudentDetailID,
+				DataSource = 'QOE',
+				Subject = 
+					CASE 
+						WHEN COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%English%'
+						AND COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%GCSE%'
+							THEN 'EngGCSE'
+						WHEN COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%Math%'
+						AND COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%GCSE%'
+							THEN 'MathsGCSE'
+						ELSE 'X'
+					END,
+				AimCode = QOE.QualCode,
+				AimTitle = COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ),
+				AimLevel = AIM.NOTIONAL_NVQ_LEVEL_CODE,
+				Grade = CAST ( RTRIM ( QOE.Grade ) AS VARCHAR(20) ),
+				GradePoints = ALPS.Points,
+				DateAwarded = COALESCE ( QOE.DateAwarded, '20' + LEFT ( SD.AcademicYearID, 2 ) + '-08-01' )
+			FROM ProSolution.dbo.StudentDetail SD
+			INNER JOIN ProSolution.dbo.QualsOnEntry QOE
+				ON QOE.StudentID = SD.StudentID
+			LEFT JOIN ProSolution.dbo.QualsOnEntryAvailableQuals QOEQ
+				ON QOEQ.Code = QOE.QualCode
+			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
+				ON AIM.LEARNING_AIM_REF = QOE.QualCode
+			LEFT JOIN GradePoints ALPS
+				ON ALPS.Grade = 
+					CASE
+						WHEN QOE.Grade LIKE '%-%' THEN LEFT ( QOE.Grade, 1 )
+						ELSE QOE.Grade
+					END
+				AND ALPS.QualType = 'G'
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'PMO_AcademicYearID'
+				)
+				AND QOE.EvidenceSeen = 1
+				AND QOE.Grade IS NOT NULL
+
+			UNION ALL
+
+			SELECT
+				StudentDetailID = SD.StudentDetailID,
+				DataSource = 'COF',
+				Subject = 'EngGCSE',
+				AimCode = 'ENGLISH',
+				AimTitle = 'GCSE in English',
+				AimLevel = NULL,
+				Grade = CAST ( RTRIM ( SD.GCSEEnglishQualificationGrade ) AS VARCHAR(20) ),
+				GradePoints = ALPS.Points,
+				DateAwarded = '20' + LEFT ( SD.AcademicYearID, 2 ) + '-08-01'
+			FROM ProSolution.dbo.StudentDetail SD
+			LEFT JOIN GradePoints ALPS
+				ON ALPS.Grade = SD.GCSEEnglishQualificationGrade
+				AND ALPS.QualType = 'G'
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'PMO_AcademicYearID'
+				)
+				AND COALESCE ( SD.GCSEEnglishQualificationGrade, 'NONE' ) <> 'NONE'
+
+			UNION ALL
+
+			SELECT
+				StudentDetailID = SD.StudentDetailID,
+				DataSource = 'COF',
+				Subject = 'MathsGCSE',
+				AimCode = 'MATHEMATICS',
+				AimTitle = 'GCSE in Mathematics',
+				AimLevel = NULL,
+				Grade = CAST ( RTRIM ( SD.GCSEMathsQualificationGrade ) AS VARCHAR(20) ),
+				GradePoints = ALPS.Points,
+				DateAwarded = '20' + LEFT ( SD.AcademicYearID, 2 ) + '-08-01'
+			FROM ProSolution.dbo.StudentDetail SD
+			LEFT JOIN GradePoints ALPS
+				ON ALPS.Grade = SD.GCSEMathsQualificationGrade
+				AND ALPS.QualType = 'G'
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'PMO_AcademicYearID'
+				)
+				AND COALESCE ( SD.GCSEMathsQualificationGrade, 'NONE' ) <> 'NONE'
+
+			UNION ALL
+
+			SELECT
+				StudentDetailID = SD.StudentDetailID,
+				DataSource = 'WLC',
+				Subject = 
+					CASE
+						WHEN AIM.LEARNING_AIM_TYPE_CODE = '0003' AND AIM.LEARNING_AIM_TITLE LIKE '%English%' THEN 'EngGCSE'
+						WHEN AIM.LEARNING_AIM_TYPE_CODE = '0003' AND AIM.LEARNING_AIM_TITLE LIKE '%Math%' THEN 'MathsGCSE'
+					END,
+				AimCode = AIM.LEARNING_AIM_REF,
+				AimTitle = AIM.LEARNING_AIM_TITLE,
+				AimLevel = AIM.NOTIONAL_NVQ_LEVEL_CODE,
+				Grade = RTRIM ( ENR.Grade ),
+				GradePoints = ALPS.Points,
+				DateAwarded = ENR.ActualEndDate
+			FROM ProSolution.dbo.StudentDetail SD
+			INNER JOIN ProSolution.dbo.StudentDetail SD2
+				ON SD2.StudentID = SD.StudentID
+				AND SD2.AcademicYearID < SD.AcademicYearID
+			INNER JOIN ProSolution.dbo.Enrolment ENR
+				ON ENR.StudentDetailID = SD2.StudentDetailID
+			INNER JOIN ProSolution.dbo.Offering CRS
+				ON CRS.OfferingID = ENR.OfferingID
+			INNER JOIN ProSolution.dbo.Learning_Aim AIM
+				ON AIM.LEARNING_AIM_REF = CRS.QualID
+			LEFT JOIN GradePoints ALPS
+				ON ALPS.Grade = 
+					CASE --Double numerical grades contain a dash so take first one
+						WHEN ENR.Grade IS NULL THEN
+							CASE
+								WHEN ENR.OutcomeID = 1 AND AIM.LEARNING_AIM_TYPE_CODE = '1439' THEN 'PA'
+								WHEN ENR.OutcomeID = 3 AND AIM.LEARNING_AIM_TYPE_CODE = '1439' THEN 'FL'
+								WHEN ENR.OutcomeID = 3 AND AIM.LEARNING_AIM_TYPE_CODE = '0003' THEN 'U'
+							END
+						WHEN ENR.Grade LIKE '%-%' THEN LEFT ( ENR.Grade, 1 )
+						ELSE ENR.Grade
+					END
+				AND ALPS.QualType = 'G'
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'PMO_AcademicYearID'
+				)
+				AND ENR.CompletionStatusID = '2'
+				AND AIM.LEARNING_AIM_TYPE_CODE IN ( '0003', '1439' )
+				AND ENR.OutcomeID IN ( 1, 3 )
+				AND
+					CASE
+						WHEN AIM.LEARNING_AIM_TYPE_CODE = '0003' AND AIM.LEARNING_AIM_TITLE LIKE '%English%' THEN 'EngGCSE'
+						WHEN AIM.LEARNING_AIM_TYPE_CODE = '0003' AND AIM.LEARNING_AIM_TITLE LIKE '%Math%' THEN 'MathsGCSE'
+					END IS NOT NULL
+		) QOE
+		INNER JOIN ProSolution.dbo.StudentDetail SD
+			ON SD.StudentDetailID = QOE.StudentDetailID
+		WHERE
+			QOE.Subject <> 'X'
+	) QOE
+	WHERE
+		QOE.RowNum = 1
+	GROUP BY
+		QOE.StudentDetailID
+
+
+	DROP TABLE IF EXISTS #RegOfferings
+	SELECT --Offerings attached to registers used for grouping Func Skills and ESOL
+		REG.RegisterID,
+		REG.RegisterNo,
+		OfferingGroups = 
+			STUFF (
+				(
+					SELECT
+						', ' + CAST ( REGC.OfferingGroupID AS VARCHAR(50) )
+					FROM ProSolution.dbo.Register REG2
+					INNER JOIN ProSolution.dbo.RegisterCourse REGC
+						ON REGC.RegisterID = REG2.RegisterID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = REGC.OfferingID
+					LEFT JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REG2.RegisterNo = REG.RegisterNo
+						AND (
+							( --Eng or Maths
+								COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+									'0003',--GCSE
+									'1439'--Func Skills
+								)
+								AND (
+									COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+									OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+								)
+							)
+							OR ( --ESOL
+								COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+							)
+						)
+					ORDER BY
+						', ' + CAST ( REGC.OfferingGroupID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			)
+		INTO #RegOfferings
+	FROM ProSolution.dbo.Register REG
+	WHERE
+		REG.AcademicYearID = (
+			SELECT
+				CFG.Value
+			FROM Config CFG
+			WHERE
+				CFG.ConfigID = 'PMO_AcademicYearID'
+		)
+
+	ALTER TABLE #RegOfferings
+	ADD PRIMARY KEY ( RegisterID )
+
+	DROP TABLE IF EXISTS #Registers
+	SELECT
+		RegisterID = MIN ( REGG.RegisterID ),
+		REGG.OfferingGroups,
+		NumTotalRegisters = COUNT ( REGG.RegisterID ),
+		Registers = 
+			STUFF (
+				(
+					SELECT
+						', ' + CAST ( REGG2.RegisterID AS VARCHAR(50) )
+					FROM #RegOfferings REGG2
+				
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+					ORDER BY
+						', ' + CAST ( REGG2.RegisterID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		CourseTypes = 
+			STUFF (
+				(
+					SELECT DISTINCT
+						', ' + CASE
+							WHEN AIM.LEARNING_AIM_TYPE_CODE = '0003' THEN 'GCSE'
+							WHEN AIM.LEARNING_AIM_TYPE_CODE = '1439' THEN 'FSL' + AIM.NVQLevelID_v2
+							WHEN AIM.LEARNING_AIM_TITLE LIKE '%ESOL%' 
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life' 
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+								THEN 'ESOL'
+							ELSE 'ERROR'
+						END
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterCourse REGC
+						ON REGC.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = REGC.OfferingID
+					LEFT JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+					ORDER BY
+						', ' + CASE
+							WHEN AIM.LEARNING_AIM_TYPE_CODE = '0003' THEN 'GCSE'
+							WHEN AIM.LEARNING_AIM_TYPE_CODE = '1439' THEN 'FSL' + AIM.NVQLevelID_v2
+							WHEN AIM.LEARNING_AIM_TITLE LIKE '%ESOL%' 
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life' 
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+								THEN 'ESOL'
+							ELSE 'ERROR'
+						END
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		IsEngMaths = 
+			STUFF (
+				(
+					SELECT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' 
+							+ MAX ( 
+								CASE
+									WHEN 
+										COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+											'0003',--GCSE
+											'1439'--Func Skills
+										)
+										AND (
+											COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+											OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+										)
+										THEN 'Y'
+									ELSE 'N'
+								END
+							)
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+					GROUP BY
+						ENR.StudentDetailID
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' 
+							+ MAX ( 
+								CASE
+									WHEN 
+										COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+											'0003',--GCSE
+											'1439'--Func Skills
+										)
+										AND (
+											COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+											OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+										)
+										THEN 'Y'
+									ELSE 'N'
+								END
+							)
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		Students = 
+			STUFF (
+				(
+					SELECT DISTINCT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					LEFT JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND (
+							( --Eng or Maths
+								COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+									'0003',--GCSE
+									'1439'--Func Skills
+								)
+								AND (
+									COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+									OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+								)
+							)
+							OR ( --ESOL
+								COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+							)
+						)
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		StudentsFSLE = 
+			STUFF (
+				(
+					SELECT DISTINCT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND (
+							( --Eng or Maths
+								COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+									'0003',--GCSE
+									'1439'--Func Skills
+								)
+								AND (
+									COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+									OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+								)
+							)
+							OR ( --ESOL
+								COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+							)
+						)
+						AND AIM.LEARNING_AIM_TYPE_CODE = '1439'
+						AND AIM.NVQLevelID_v2 = 'E'
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		StudentsFSL1 = 
+			STUFF (
+				(
+					SELECT DISTINCT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND (
+							( --Eng or Maths
+								COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+									'0003',--GCSE
+									'1439'--Func Skills
+								)
+								AND (
+									COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+									OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+								)
+							)
+							OR ( --ESOL
+								COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+							)
+						)
+						AND AIM.LEARNING_AIM_TYPE_CODE = '1439'
+						AND AIM.NVQLevelID_v2 = '1'
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		StudentsFSL2 = 
+			STUFF (
+				(
+					SELECT DISTINCT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND (
+							( --Eng or Maths
+								COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+									'0003',--GCSE
+									'1439'--Func Skills
+								)
+								AND (
+									COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+									OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+								)
+							)
+							OR ( --ESOL
+								COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+							)
+						)
+						AND AIM.LEARNING_AIM_TYPE_CODE = '1439'
+						AND AIM.NVQLevelID_v2 = '2'
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		StudentsGCSE = 
+			STUFF (
+				(
+					SELECT DISTINCT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND (
+							( --Eng or Maths
+								COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+									'0003',--GCSE
+									'1439'--Func Skills
+								)
+								AND (
+									COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+									OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+								)
+							)
+							OR ( --ESOL
+								COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+							)
+						)
+						AND AIM.LEARNING_AIM_TYPE_CODE = '0003'
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		StudentsESOL = 
+			STUFF (
+				(
+					SELECT DISTINCT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND (
+							( --Eng or Maths
+								COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+									'0003',--GCSE
+									'1439'--Func Skills
+								)
+								AND (
+									COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+									OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+								)
+							)
+							OR ( --ESOL
+								COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+								OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+							)
+						)
+						AND (
+							COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+							OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+							OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+						)
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		StudentsERROR = 
+			STUFF (
+				(
+					SELECT DISTINCT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					LEFT JOIN ProSolution.dbo.Learning_AIM AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) NOT IN (
+							'0003',--GCSE
+							'1439'--Func Skills
+						)
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		Enrolments = 
+			STUFF (
+				(
+					SELECT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' + MIN ( CAST ( ENR.EnrolmentID AS VARCHAR(50) ) )
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_Aim AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND AIM.LEARNING_AIM_TYPE_CODE = '0003'
+						AND (
+							AIM.LEARNING_AIM_TITLE LIKE '%Math%'
+							OR AIM.LEARNING_AIM_TITLE LIKE '%English%'
+						)
+					GROUP BY
+						ENR.StudentDetailID
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' + MIN ( CAST ( ENR.EnrolmentID AS VARCHAR(50) ) )
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		TargetGrade = 
+			STUFF (
+				(
+					SELECT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' + MIN ( 
+							COALESCE (
+								CASE
+									WHEN AIM.LEARNING_AIM_TITLE LIKE '%Math%' THEN MAT.Grade
+									ELSE ENG.Grade
+								END,
+								'4'
+							)
+						)
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_Aim AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					LEFT JOIN #QOEs QOE
+						ON QOE.StudentDetailID = ENR.StudentDetailID
+					LEFT JOIN GradePoints MAT
+						ON MAT.Points = 
+							CASE
+								WHEN CEILING ( QOE.MathsGCSEPoints ) < 3 THEN 4
+								WHEN CEILING ( QOE.MathsGCSEPoints ) >= 7 THEN 9
+								ELSE CEILING ( QOE.MathsGCSEPoints ) + 2
+							END
+						AND MAT.QualType = 'G'
+						AND MAT.Grade BETWEEN '1' AND '9'
+					LEFT JOIN GradePoints ENG
+						ON ENG.Points = 
+							CASE
+								WHEN CEILING ( QOE.EngGCSEPoints ) < 3 THEN 4
+								WHEN CEILING ( QOE.EngGCSEPoints ) >= 7 THEN 9
+								ELSE CEILING ( QOE.EngGCSEPoints ) + 2
+							END
+						AND ENG.QualType = 'G'
+						AND ENG.Grade BETWEEN '1' AND '9'
+					LEFT JOIN (
+						SELECT
+							RNK1.Grade,
+							RNK1.GradeRank,
+							MaxRank = MAX ( RNK2.GradeRank ),
+							TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
+						FROM #RankingsGCSE RNK1
+						INNER JOIN #RankingsGCSE RNK2
+							ON 1 = 1
+						GROUP BY
+							RNK1.Grade,
+							RNK1.GradeRank
+					) PERMAT
+						ON PERMAT.Grade = MAT.Grade
+					LEFT JOIN (
+						SELECT
+							RNK1.Grade,
+							RNK1.GradeRank,
+							MaxRank = MAX ( RNK2.GradeRank ),
+							TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
+						FROM #RankingsGCSE RNK1
+						INNER JOIN #RankingsGCSE RNK2
+							ON 1 = 1
+						GROUP BY
+							RNK1.Grade,
+							RNK1.GradeRank
+					) PERENG
+						ON PERENG.Grade = ENG.Grade
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND AIM.LEARNING_AIM_TYPE_CODE = '0003'
+						AND (
+							AIM.LEARNING_AIM_TITLE LIKE '%Math%'
+							OR AIM.LEARNING_AIM_TITLE LIKE '%English%'
+						)
+					GROUP BY
+						ENR.StudentDetailID
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' + MIN ( 
+							COALESCE (
+								CASE
+									WHEN AIM.LEARNING_AIM_TITLE LIKE '%Math%' THEN MAT.Grade
+									ELSE ENG.Grade
+								END,
+								'4'
+							)
+						)
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		TargetPercent = 
+			STUFF (
+				(
+					SELECT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' + MIN ( 
+							CAST (
+								COALESCE (
+									CASE
+										WHEN AIM.LEARNING_AIM_TITLE LIKE '%Math%' THEN PERMAT.TargetPercent
+										ELSE PERENG.TargetPercent
+									END,
+									44
+								)
+							AS VARCHAR(50) )
+						)
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_Aim AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					LEFT JOIN #QOEs QOE
+						ON QOE.StudentDetailID = ENR.StudentDetailID
+					LEFT JOIN GradePoints MAT
+						ON MAT.Points = 
+							CASE
+								WHEN CEILING ( QOE.MathsGCSEPoints ) < 3 THEN 4
+								WHEN CEILING ( QOE.MathsGCSEPoints ) >= 7 THEN 9
+								ELSE CEILING ( QOE.MathsGCSEPoints ) + 2
+							END
+						AND MAT.QualType = 'G'
+						AND MAT.Grade BETWEEN '1' AND '9'
+					LEFT JOIN GradePoints ENG
+						ON ENG.Points = 
+							CASE
+								WHEN CEILING ( QOE.EngGCSEPoints ) < 3 THEN 4
+								WHEN CEILING ( QOE.EngGCSEPoints ) >= 7 THEN 9
+								ELSE CEILING ( QOE.EngGCSEPoints ) + 2
+							END
+						AND ENG.QualType = 'G'
+						AND ENG.Grade BETWEEN '1' AND '9'
+					LEFT JOIN (
+						SELECT
+							RNK1.Grade,
+							RNK1.GradeRank,
+							MaxRank = MAX ( RNK2.GradeRank ),
+							TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
+						FROM #RankingsGCSE RNK1
+						INNER JOIN #RankingsGCSE RNK2
+							ON 1 = 1
+						GROUP BY
+							RNK1.Grade,
+							RNK1.GradeRank
+					) PERMAT
+						ON PERMAT.Grade = MAT.Grade
+					LEFT JOIN (
+						SELECT
+							RNK1.Grade,
+							RNK1.GradeRank,
+							MaxRank = MAX ( RNK2.GradeRank ),
+							TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
+						FROM #RankingsGCSE RNK1
+						INNER JOIN #RankingsGCSE RNK2
+							ON 1 = 1
+						GROUP BY
+							RNK1.Grade,
+							RNK1.GradeRank
+					) PERENG
+						ON PERENG.Grade = ENG.Grade
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND AIM.LEARNING_AIM_TYPE_CODE = '0003'
+						AND (
+							AIM.LEARNING_AIM_TITLE LIKE '%Math%'
+							OR AIM.LEARNING_AIM_TITLE LIKE '%English%'
+						)
+					GROUP BY
+						ENR.StudentDetailID
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' + MIN ( 
+							CAST (
+								COALESCE (
+									CASE
+										WHEN AIM.LEARNING_AIM_TITLE LIKE '%Math%' THEN PERMAT.TargetPercent
+										ELSE PERENG.TargetPercent
+									END,
+									44
+								)
+							AS VARCHAR(50) )
+						)
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			),
+		Points = 
+			STUFF (
+				(
+					SELECT
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' + MIN ( 
+							CAST (
+								COALESCE (
+									CASE
+										WHEN AIM.LEARNING_AIM_TITLE LIKE '%Math%' THEN MAT.Points
+										ELSE ENG.Points
+									END,
+									4.00
+								)
+							AS VARCHAR(50) )
+						)
+					FROM #RegOfferings REGG2
+					INNER JOIN ProSolution.dbo.RegisterStudent REGS
+						ON REGS.RegisterID = REGG2.RegisterID
+					INNER JOIN ProSolution.dbo.Enrolment ENR
+						ON ENR.EnrolmentID = REGS.EnrolmentID
+					INNER JOIN ProSolution.dbo.Offering CRS
+						ON CRS.OfferingID = ENR.OfferingID
+					INNER JOIN ProSolution.dbo.Learning_Aim AIM
+						ON AIM.LEARNING_AIM_REF = CRS.QualID
+					LEFT JOIN #QOEs QOE
+						ON QOE.StudentDetailID = ENR.StudentDetailID
+					LEFT JOIN GradePoints MAT
+						ON MAT.Points = 
+							CASE
+								WHEN CEILING ( QOE.MathsGCSEPoints ) < 3 THEN 4
+								WHEN CEILING ( QOE.MathsGCSEPoints ) >= 7 THEN 9
+								ELSE CEILING ( QOE.MathsGCSEPoints ) + 2
+							END
+						AND MAT.QualType = 'G'
+						AND MAT.Grade BETWEEN '1' AND '9'
+					LEFT JOIN GradePoints ENG
+						ON ENG.Points = 
+							CASE
+								WHEN CEILING ( QOE.EngGCSEPoints ) < 3 THEN 4
+								WHEN CEILING ( QOE.EngGCSEPoints ) >= 7 THEN 9
+								ELSE CEILING ( QOE.EngGCSEPoints ) + 2
+							END
+						AND ENG.QualType = 'G'
+						AND ENG.Grade BETWEEN '1' AND '9'
+					LEFT JOIN (
+						SELECT
+							RNK1.Grade,
+							RNK1.GradeRank,
+							MaxRank = MAX ( RNK2.GradeRank ),
+							TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
+						FROM #RankingsGCSE RNK1
+						INNER JOIN #RankingsGCSE RNK2
+							ON 1 = 1
+						GROUP BY
+							RNK1.Grade,
+							RNK1.GradeRank
+					) PERMAT
+						ON PERMAT.Grade = MAT.Grade
+					LEFT JOIN (
+						SELECT
+							RNK1.Grade,
+							RNK1.GradeRank,
+							MaxRank = MAX ( RNK2.GradeRank ),
+							TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
+						FROM #RankingsGCSE RNK1
+						INNER JOIN #RankingsGCSE RNK2
+							ON 1 = 1
+						GROUP BY
+							RNK1.Grade,
+							RNK1.GradeRank
+					) PERENG
+						ON PERENG.Grade = ENG.Grade
+					WHERE
+						REGG2.OfferingGroups = REGG.OfferingGroups
+						AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+						AND AIM.LEARNING_AIM_TYPE_CODE = '0003'
+						AND (
+							AIM.LEARNING_AIM_TITLE LIKE '%Math%'
+							OR AIM.LEARNING_AIM_TITLE LIKE '%English%'
+						)
+					GROUP BY
+						ENR.StudentDetailID
+					ORDER BY
+						', ' + CAST ( ENR.StudentDetailID AS VARCHAR(50) ) + '|' + MIN ( 
+							CAST (
+								COALESCE (
+									CASE
+										WHEN AIM.LEARNING_AIM_TITLE LIKE '%Math%' THEN MAT.Points
+										ELSE ENG.Points
+									END,
+									4.00
+								)
+							AS VARCHAR(50) )
+						)
+					FOR XML PATH(''),
+					TYPE
+				).value('.','varchar(max)'), 1, 2, ''
+
+			)
+		INTO #Registers
+	FROM #RegOfferings REGG
+	--WHERE
+		--REGG.RegisterNo LIKE '53H012%'
+	GROUP BY
+		REGG.OfferingGroups
+
+
+	-- ALPS Targets from L3 Quals
+	SELECT
+		LearnerRef = SD.RefNo,
+		CourseCode = CRS.Code,
+		UniqueID = ENR.EnrolmentID,
+		TargetPercent = PER.TargetPercent,
+		TargetGrade1 = NULL,
+		TargetGrade2 = TAR.TargetGrade, --Re-label and check if should be target 1 or 2
+		Points = TAR.Points
+	FROM ProSolution.dbo.StudentDetail SD
+	INNER JOIN ProSolution.dbo.Enrolment ENR
+		ON ENR.StudentDetailID = SD.StudentDetailID
+	INNER JOIN ProSolution.dbo.Offering CRS
+		ON CRS.OfferingID = ENR.OfferingID
+	INNER JOIN ProSolution.dbo.Learning_Aim AIM
+		ON AIM.LEARNING_AIM_REF = CRS.QualID
+	LEFT JOIN (
+		SELECT
+			StudentID = QOE.StudentID,
+			NumGCSEs = COUNT ( QOE.StudentID ),
+			AvgGCSE = ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( COUNT ( QOE.StudentID ) AS FLOAT ), 2 )
+		FROM (
+			SELECT DISTINCT
+				PLR.StudentID,
+				PLRD.SourceQualificationCode,
+				PLRD.QualificationTitle,
+				PLRD.AwardDate,
+				PLRD.Grade,
+				GP.Points,
+				GradeOrder = 
+					ROW_NUMBER () OVER ( 
+						PARTITION BY 
+							PLR.StudentID, 
+							PLRD.SourceQualificationCode
+						ORDER BY 
+							CASE
+								WHEN PLRD.Grade = 'A*' THEN 1
+								ELSE 2
+							END,
+							PLRD.Grade 
+					)
+			FROM ProSolution.dbo.StudentDetail SD
+			INNER JOIN ProSolution.dbo.PLRDownload PLR
+				ON PLR.StudentID = SD.StudentID
+			INNER JOIN ProSolution.dbo.PLRLearnerEventDownload PLRD
+				ON PLRD.PLRDownloadID = PLR.PLRDownloadID
+			INNER JOIN #EarliestStart EAR
+				ON EAR.StudentID = PLR.StudentID
+			INNER JOIN GradePoints GP
+				ON GP.Grade = PLRD.Grade
+				AND GP.QualType = 'G'
+			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
+				ON AIM.LEARNING_AIM_REF = PLRD.SourceQualificationCode
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'PMO_AcademicYearID'
+				)
+				AND (
+					PLRD.QualificationTitle LIKE '%GCSE%'
+					OR AIM.LEARNING_AIM_TITLE LIKE '%GCSE%'
+				)
+				AND PLRD.AwardDate IS NOT NULL
+				AND PLRD.AwardDate < EAR.EarliestStartDate
+		) QOE
+		WHERE
+			QOE.GradeOrder = 1
+			--AND QOE.StudentID = 75672
+		GROUP BY
+			QOE.StudentID
+	) PLR
+		ON PLR.StudentID = SD.StudentID
+	INNER JOIN ALPS_AimTypeMapping ATM
+		ON ATM.LearnAimRefType =
+			CASE
+				WHEN AIM.learning_aim_title LIKE '%Extended Diploma%' THEN '1428'
+				WHEN AIM.learning_aim_title LIKE '%Extended Certificate%' THEN '1426'
+				WHEN AIM.learning_aim_title LIKE '%90-credit%' THEN '90'
+				WHEN AIM.learning_aim_title LIKE '%Foundation%' THEN '90'
+				ELSE AIM.learning_aim_type_code
+			END
+	INNER JOIN ALPS_TargetSetting TAR
+		ON TAR.Subject = COALESCE ( ATM.Subject, 'Sub Dip/Ext Cert' )
+		AND PLR.AvgGCSE BETWEEN TAR.MinPoints AND TAR.MaxPoints
+	INNER JOIN (
+		SELECT
+			RNK1.Subject,
+			RNK1.TargetGrade,
+			RNK1.GradeRank,
+			MaxRank = MAX ( RNK2.GradeRank ),
+			TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
+		FROM #Rankings RNK1
+		INNER JOIN #Rankings RNK2
+			ON RNK2.Subject = RNK1.Subject
+		GROUP BY
+			RNK1.Subject,
+			RNK1.TargetGrade,
+			RNK1.GradeRank
+	) PER
+		ON PER.Subject = TAR.Subject
+		AND PER.TargetGrade = TAR.TargetGrade
+	WHERE
+		SD.AcademicYearID = (
+			SELECT
+				CFG.Value
+			FROM Config CFG
+			WHERE
+				CFG.ConfigID = 'PMO_AcademicYearID'
+		)
+		AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+		AND AIM.NVQLevelID_v2 = '3'
+		AND TAR.TargetGrade IS NOT NULL
+
+	
+	--Other L2 Provision (Exc. GCSE and Functional Skills Maths and English)
+	UNION ALL
+
+	SELECT  
+		LearnerRef = SD.RefNo,
+		CourseCode = CRS.Code,
+		UniqueID = ENR.EnrolmentID,
+		TargetPercent = '100',
+		TargetGrade1 = NULL,
+		TargetGrade2 = 'P', --Re-label and check if should be target 1 or 2
+		Points = '100.00'
+	FROM ProSolution.dbo.StudentDetail SD
+	INNER JOIN ProSolution.dbo.Enrolment ENR
+		ON ENR.StudentDetailID = SD.StudentDetailID
+	INNER JOIN ProSolution.dbo.Offering CRS
+		ON CRS.OfferingID = ENR.OfferingID
+	INNER JOIN ProSolution.dbo.Learning_Aim AIM
+		ON AIM.LEARNING_AIM_REF = CRS.QualID
+	LEFT JOIN (
+		--Exclude L2 courses with any merit or distinction marks in the system
+		SELECT DISTINCT 
+			CRS.QualID
+		FROM ProSolution.dbo.StudentDetail SD
+		INNER JOIN ProSolution.dbo.Enrolment ENR
+			ON ENR.StudentDetailID = SD.StudentDetailID
+		INNER JOIN ProSolution.dbo.Offering CRS
+			ON CRS.OfferingID = ENR.OfferingID
+		INNER JOIN ProSolution.dbo.Learning_Aim AIM
+			ON AIM.LEARNING_AIM_REF = CRS.QualID
+		WHERE
+			AIM.NVQLevelID_v2 = '2'
+			AND ENR.Grade IN ( 'D', 'DS', 'M', 'ME' )
+	) NPF1
+		ON NPF1.QualID = CRS.QualID
+	LEFT JOIN (
+		--Exclude L2 courses with any merit or distinction marks in the system
+		SELECT DISTINCT 
+			CRS.QualID
+		FROM ProSolution.dbo.StudentDetail SD
+		INNER JOIN ProSolution.dbo.Enrolment ENR
+			ON ENR.StudentDetailID = SD.StudentDetailID
+		INNER JOIN ProSolution.dbo.Offering CRS
+			ON CRS.OfferingID = ENR.OfferingID
+		INNER JOIN ProSolution.dbo.Learning_Aim AIM
+			ON AIM.LEARNING_AIM_REF = CRS.QualID
+		WHERE
+			AIM.NVQLevelID_v2 = '2'
+			AND ENR.Grade IN ( 'A', 'B', 'C', 'D', 'E', 'F', 'G' )
+	) NPF2
+		ON NPF2.QualID = CRS.QualID
+	WHERE
+		SD.AcademicYearID = (
+			SELECT
+				CFG.Value
+			FROM Config CFG
+			WHERE
+				CFG.ConfigID = 'PMO_AcademicYearID'
+		)
+		AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+		AND AIM.NVQLevelID_v2 = '2'
+		AND NPF1.QualID IS NULL
+		AND NPF2.QualID IS NULL
+		AND NOT (
+			( --Eng or Maths
+				COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+					'0003',--GCSE
+					'1439'--Func Skills
+				)
+				AND (
+					COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+					OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+				)
+			)
+			OR ( --ESOL
+				COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+				OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+				OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+			)
+		)
+
+
+	--GCSE Maths and English
+
+	UNION ALL
+	
+	SELECT
+		LearnerRef = SD.RefNo,
+		CourseCode = RIGHT ( REPLACE ( REG.RegisterNo, ' ', '' ), 19 ) + '-' + RTRIM ( LTRIM ( CT.Value ) ),
+		UniqueID = 
+			RIGHT ( 
+				SUBSTRING ( 
+					REGG.Enrolments,
+					CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Enrolments ),
+					(CASE 
+						WHEN CHARINDEX ( ',', REGG.Enrolments, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Enrolments ) ) = 0 THEN LEN ( REGG.Enrolments ) + 1
+						ELSE CHARINDEX ( ',', REGG.Enrolments, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Enrolments ) )
+					END)
+					- CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Enrolments )
+				),
+				CHARINDEX (
+					'|',
+					REVERSE ( 
+						SUBSTRING ( 
+							REGG.Enrolments,
+							CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Enrolments ),
+							(CASE 
+								WHEN CHARINDEX ( ',', REGG.Enrolments, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Enrolments ) ) = 0 THEN LEN ( REGG.Enrolments ) + 1
+								ELSE CHARINDEX ( ',', REGG.Enrolments, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Enrolments ) )
+							END)
+							- CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Enrolments )
+						)
+					)
+				) - 1
+			),
+		TargetPercent = 
+			CASE
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'GCSE' THEN
+					RIGHT ( 
+						SUBSTRING ( 
+							REGG.TargetPercent,
+							CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetPercent ),
+							(CASE 
+								WHEN CHARINDEX ( ',', REGG.TargetPercent, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetPercent ) ) = 0 THEN LEN ( REGG.TargetPercent ) + 1
+								ELSE CHARINDEX ( ',', REGG.TargetPercent, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetPercent ) )
+							END)
+							- CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetPercent )
+						),
+						CHARINDEX (
+							'|',
+							REVERSE ( 
+								SUBSTRING ( 
+									REGG.TargetPercent,
+									CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetPercent ),
+									(CASE 
+										WHEN CHARINDEX ( ',', REGG.TargetPercent, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetPercent ) ) = 0 THEN LEN ( REGG.TargetPercent ) + 1
+										ELSE CHARINDEX ( ',', REGG.TargetPercent, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetPercent ) )
+									END)
+									- CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetPercent )
+								)
+							)
+						) - 1
+					)
+				ELSE '100'
+			END,
+		TargetGrade1 = NULL,
+		TargetGrade2 = 
+			CASE
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'GCSE' THEN
+					RIGHT ( 
+						SUBSTRING ( 
+							REGG.TargetGrade,
+							CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetGrade ),
+							(CASE 
+								WHEN CHARINDEX ( ',', REGG.TargetGrade, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetGrade ) ) = 0 THEN LEN ( REGG.TargetGrade ) + 1
+								ELSE CHARINDEX ( ',', REGG.TargetGrade, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetGrade ) )
+							END)
+							- CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetGrade )
+						),
+						CHARINDEX (
+							'|',
+							REVERSE ( 
+								SUBSTRING ( 
+									REGG.TargetGrade,
+									CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetGrade ),
+									(CASE 
+										WHEN CHARINDEX ( ',', REGG.TargetGrade, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetGrade ) ) = 0 THEN LEN ( REGG.TargetGrade ) + 1
+										ELSE CHARINDEX ( ',', REGG.TargetGrade, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetGrade ) )
+									END)
+									- CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.TargetGrade )
+								)
+							)
+						) - 1
+					)
+				ELSE 'P'
+			END,
+		Points = 
+			CASE
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'GCSE' THEN
+					RIGHT ( 
+						SUBSTRING ( 
+							REGG.Points,
+							CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Points ),
+							(CASE 
+								WHEN CHARINDEX ( ',', REGG.Points, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Points ) ) = 0 THEN LEN ( REGG.Points ) + 1
+								ELSE CHARINDEX ( ',', REGG.Points, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Points ) )
+							END)
+							- CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Points )
+						),
+						CHARINDEX (
+							'|',
+							REVERSE ( 
+								SUBSTRING ( 
+									REGG.Points,
+									CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Points ),
+									(CASE 
+										WHEN CHARINDEX ( ',', REGG.Points, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Points ) ) = 0 THEN LEN ( REGG.Points ) + 1
+										ELSE CHARINDEX ( ',', REGG.Points, CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Points ) )
+									END)
+									- CHARINDEX ( CAST ( SD.StudentDetailID AS VARCHAR(20) ), REGG.Points )
+								)
+							)
+						) - 1
+					)
+				ELSE '100.00'
+			END
+	FROM #Registers REGG
+	INNER JOIN ProSolution.dbo.Register REG
+		ON REG.RegisterID = REGG.RegisterID
+	CROSS APPLY STRING_SPLIT ( REGG.Students, ',' ) STUR
+	INNER JOIN ProSolution.dbo.StudentDetail SD
+		ON SD.StudentDetailID = STUR.Value
+	CROSS APPLY STRING_SPLIT ( REGG.CourseTypes, ',' ) CT
+	WHERE
+		REG.AcademicYearID = (
+				SELECT
+					CFG.Value
+				FROM Config CFG
+				WHERE
+					CFG.ConfigID = 'PMO_AcademicYearID'
+			)
+		AND --Only show learners on register course types where courses they are on are of that level/type
+			CASE
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'FSLE' THEN
+					CASE
+						WHEN SD.StudentDetailID IN ( SELECT L.Value FROM STRING_SPLIT ( REGG.StudentsFSLE, ',' ) L ) THEN 1
+						ELSE 0
+					END
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'FSL1' THEN
+					CASE
+						WHEN SD.StudentDetailID IN ( SELECT L.Value FROM STRING_SPLIT ( REGG.StudentsFSL1, ',' ) L ) THEN 1
+						ELSE 0
+					END
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'FSL2' THEN
+					CASE
+						WHEN SD.StudentDetailID IN ( SELECT L.Value FROM STRING_SPLIT ( REGG.StudentsFSL2, ',' ) L ) THEN 1
+						ELSE 0
+					END
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'GCSE' THEN
+					CASE
+						WHEN SD.StudentDetailID IN ( SELECT L.Value FROM STRING_SPLIT ( REGG.StudentsGCSE, ',' ) L ) THEN 1
+						ELSE 0
+					END
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'ESOL' THEN
+					CASE
+						WHEN SD.StudentDetailID IN ( SELECT L.Value FROM STRING_SPLIT ( REGG.StudentsESOL, ',' ) L ) THEN 1
+						ELSE 0
+					END
+				WHEN RTRIM ( LTRIM ( CT.Value ) ) = 'ERROR' THEN
+					CASE
+						WHEN SD.StudentDetailID IN ( SELECT L.Value FROM STRING_SPLIT ( REGG.StudentsERROR, ',' ) L ) THEN 1
+						ELSE 0
+					END
+				ELSE 0
+			END = 1
+END

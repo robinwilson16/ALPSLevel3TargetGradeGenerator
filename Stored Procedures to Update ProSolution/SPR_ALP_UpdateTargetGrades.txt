@@ -8,35 +8,37 @@ AS
 BEGIN
 	SET NOCOUNT ON;
 
-	WITH EarliestStart AS (
+	DROP TABLE IF EXISTS #EarliestStart
+	SELECT
+		SD.StudentID,
+		EarliestStartDate = MIN ( ENR.StartDate )
+		INTO #EarliestStart
+	FROM ProSolution.dbo.StudentDetail SD
+	INNER JOIN ProSolution.dbo.Enrolment ENR
+		ON ENR.StudentDetailID = SD.StudentDetailID
+	WHERE
+		ENR.CompletionStatusID IN ( '1', '2', '3' )
+		AND ENR.IncludeInReturn = 1
+	GROUP BY
+		SD.StudentID
+
+
+	DROP TABLE IF EXISTS #Rankings
+	SELECT
+		GRA.Subject,
+		GRA.TargetGrade,
+		GradeRank = ROW_NUMBER () OVER ( PARTITION BY GRA.Subject ORDER BY GRA.MaxPoints )
+		INTO #Rankings
+	FROM (
 		SELECT
-			SD.StudentID,
-			EarliestStartDate = MIN ( ENR.StartDate )
-		FROM ProSolution.dbo.StudentDetail SD
-		INNER JOIN ProSolution.dbo.Enrolment ENR
-			ON ENR.StudentDetailID = SD.StudentDetailID
-		WHERE
-			ENR.CompletionStatusID IN ( '1', '2', '3' )
-			AND ENR.IncludeInReturn = 1
+			TAR.Subject,
+			TAR.TargetGrade,
+			MaxPoints = MAX ( TAR.MaxPoints )
+		FROM ALPS_TargetSetting TAR
 		GROUP BY
-			SD.StudentID
-	),
-	Rankings AS (
-		SELECT
-			GRA.Subject,
-			GRA.TargetGrade,
-			GradeRank = ROW_NUMBER () OVER ( PARTITION BY GRA.Subject ORDER BY GRA.MaxPoints )
-		FROM (
-			SELECT
-				TAR.Subject,
-				TAR.TargetGrade,
-				MaxPoints = MAX ( TAR.MaxPoints )
-			FROM ALPS_TargetSetting TAR
-			GROUP BY
-				TAR.Subject,
-				TAR.TargetGrade
-		) GRA
-	)
+			TAR.Subject,
+			TAR.TargetGrade
+	) GRA
 
 	UPDATE ENR
 	SET
@@ -88,10 +90,15 @@ BEGIN
 				ON PLR.StudentID = SD.StudentID
 			INNER JOIN ProSolution.dbo.PLRLearnerEventDownload PLRD
 				ON PLRD.PLRDownloadID = PLR.PLRDownloadID
-			INNER JOIN EarliestStart EAR
+			INNER JOIN #EarliestStart EAR
 				ON EAR.StudentID = PLR.StudentID
-			INNER JOIN ALPS_GCSEPoints GCSE
-				ON GCSE.Grade = PLRD.Grade
+			INNER JOIN GradePoints ALPS
+				ON ALPS.Grade = 
+					CASE
+						WHEN PLRD.Grade LIKE '%-%' THEN LEFT ( PLRD.Grade, 1 )
+						ELSE PLRD.Grade
+					END
+				AND ALPS.QualType = 'G'
 			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
 				ON AIM.LEARNING_AIM_REF = PLRD.SourceQualificationCode
 			WHERE
@@ -125,8 +132,8 @@ BEGIN
 			RNK1.GradeRank,
 			MaxRank = MAX ( RNK2.GradeRank ),
 			TargetPercent = ROUND ( ( 100.00 / CAST ( MAX ( RNK2.GradeRank ) AS FLOAT ) ) * RNK1.GradeRank, 0 )
-		FROM Rankings RNK1
-		INNER JOIN Rankings RNK2
+		FROM #Rankings RNK1
+		INNER JOIN #Rankings RNK2
 			ON RNK2.Subject = RNK1.Subject
 		GROUP BY
 			RNK1.Subject,
