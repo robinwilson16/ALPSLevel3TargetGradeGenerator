@@ -12,7 +12,7 @@ These targets are updated each year so the mapping table should be reviewed year
 An example of these tables is here:
 
 Academic:
-![A Level ALPS Table](/Target Grade Mapping Tables/A Level.png)
+![A Level ALPS Table](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/A%20Level.png)
 
 BTEC:
 Image
