@@ -9,12 +9,14 @@ Targets are assigned by looking at the academic and vocational ALPS Benchmarks a
 
 These targets are updated each year so the mapping table should be reviewed yearly to ensure it is still up to date.
 
-An example of these tables is here:
+An example of these ALPS Benchmark tables is here:
 
 Academic:
+
 ![A Level ALPS Table](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/A%20Level.png)
 
 BTEC:
+
 ![BTEC ALPS Table 1](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/BTEC1.png)
 ![BTEC ALPS Table 2](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/BTEC2.png)
 
@@ -51,3 +53,20 @@ Next open the table called `GradePoints` used to calculate the average GCSE scor
 Ensure each grade has the correct grade points mapping. This information is in `Benchmark Update - England`
 
 ![GCSE Mapping Letters to Numerical Grades](https://github.com/robinwilson16/ALPSLevel3TargetGradeGenerator/blob/master/Target%20Grade%20Mapping%20Tables/GCSEs.png)
+
+## Level 2 Targets
+
+Level 2 targets are also now calculated and the methodology for this is as follows:
+
+**For GCSE Maths and English:**
+
+* To establish highest GCSE Maths and English grades look at PLR, QOE, CoF and prior WLC quals and rank and pick highest ones
+* If grade is <3 make target 4
+* If grade is >= 7 make grade 9 (so doesn't end up too high!)
+* Otherwise add 2 to grade (e.g. so if grade was 5 then target would be 7)
+
+
+**For Other Level 2s that are Pass/Fail**
+* To establish that course is pass/fail exclude any aims where we have previously graded as M and D in any year or A - G in any year
+* Aim is level 2
+* Aim type is not GCSE
