@@ -9,6 +9,13 @@ Targets are assigned by looking at the academic and vocational ALPS Benchmarks a
 
 These targets are updated each year so the mapping table should be reviewed yearly to ensure it is still up to date.
 
+An example of these tables is here:
+
+Academic:
+![A Level ALPS Table](/Target Grade Mapping Tables/A Level.png)
+
+BTEC:
+Image
 
 **Setting Up**
 
@@ -37,10 +44,9 @@ Using the information above, open the table called ALPS_TargetSetting which cont
 Ensure the grade and points are correct as these are the most likely thing to have changed. Also check the grade boundaries are still valid too.
 
 
-is used to map the average points score to the subject type being studied in order to obtain the target grade.
-Ensure min and max point values match the Benchmark Update documents to ensure correct target grades will be assigned.
-
 > There have been extensive changes in 2019/20 due to the move to the 9-1 GCSE grading system (before 9-1 grades were mapped to A*-G)
 
 Next open the table called `GradePoints` used to calculate the average GCSE score (will not be needed once everything is reformed and 1-9)
 Ensure each grade has the correct grade points mapping. This information is in `Benchmark Update - England`
+
+Image Here
