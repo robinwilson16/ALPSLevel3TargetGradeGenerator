@@ -60,7 +60,7 @@ Level 2 targets are also now calculated and the methodology for this is as follo
 
 **For GCSE Maths and English:**
 
-* To establish highest GCSE Maths and English grades look at PLR, QOE, CoF and prior WLC quals and rank and pick highest ones
+* To establish highest GCSE Maths and English grades look at PLR, QOE, CoF and prior college achieved quals and rank and pick highest ones
 * If grade is < [VALUE IN CONFIG TABLE] make target [VALUE IN CONFIG TABLE]
 * Otherwise add + [VALUE IN CONFIG TABLE] grades to grade (e.g. so if grade was 5 then target would be 6 or 7 depending on values set)
 
