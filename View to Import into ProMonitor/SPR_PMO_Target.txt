@@ -5,17 +5,24 @@ BEGIN
 
 	DROP TABLE IF EXISTS #EarliestStart
 	SELECT
-		SD.StudentID,
+		SD.StudentDetailID,
 		EarliestStartDate = MIN ( ENR.StartDate )
 		INTO #EarliestStart
 	FROM ProSolution.dbo.StudentDetail SD
 	INNER JOIN ProSolution.dbo.Enrolment ENR
 		ON ENR.StudentDetailID = SD.StudentDetailID
 	WHERE
-		ENR.CompletionStatusID IN ( '1', '2', '3' )
+		SD.AcademicYearID = (
+			SELECT
+				CFG.Value
+			FROM Config CFG
+			WHERE
+				CFG.ConfigID = 'PMO_AcademicYearID'
+		)
+		AND ENR.CompletionStatusID IN ( '1', '2', '3', '4' )
 		AND ENR.IncludeInReturn = 1
 	GROUP BY
-		SD.StudentID
+		SD.StudentDetailID
 
 
 	DROP TABLE IF EXISTS #Rankings
@@ -829,21 +836,27 @@ BEGIN
 						ON AIM.LEARNING_AIM_REF = CRS.QualID
 					LEFT JOIN #QOEs QOE
 						ON QOE.StudentDetailID = ENR.StudentDetailID
+					LEFT JOIN Config CLV
+						ON CLV.ConfigID = 'PMO_GCSEGradeImprovementMin'
+					LEFT JOIN Config CLT
+						ON CLV.ConfigID = 'PMO_GCSEGradeImprovementTrigger'
+					LEFT JOIN Config CIT
+						ON CIT.ConfigID = 'PMO_GCSEGradeImprovementTarget'
 					LEFT JOIN GradePoints MAT
 						ON MAT.Points = 
 							CASE
-								WHEN CEILING ( QOE.MathsGCSEPoints ) < 3 THEN 4
-								WHEN CEILING ( QOE.MathsGCSEPoints ) >= 7 THEN 9
-								ELSE CEILING ( QOE.MathsGCSEPoints ) + 2
+								WHEN COALESCE ( CLV.Value, 0 ) > 0 AND COALESCE ( CLT.Value, 0 ) > 0 AND CEILING ( QOE.MathsGCSEPoints ) < CLT.Value THEN CLV.Value
+								WHEN CEILING ( QOE.MathsGCSEPoints ) + COALESCE ( CIT.Value, 1 ) > 9 THEN 9 --Ensure value does not go above 9
+								ELSE CEILING ( QOE.MathsGCSEPoints ) + COALESCE ( CIT.Value, 1 )
 							END
 						AND MAT.QualType = 'G'
 						AND MAT.Grade BETWEEN '1' AND '9'
 					LEFT JOIN GradePoints ENG
 						ON ENG.Points = 
 							CASE
-								WHEN CEILING ( QOE.EngGCSEPoints ) < 3 THEN 4
-								WHEN CEILING ( QOE.EngGCSEPoints ) >= 7 THEN 9
-								ELSE CEILING ( QOE.EngGCSEPoints ) + 2
+								WHEN COALESCE ( CLV.Value, 0 ) > 0 AND COALESCE ( CLT.Value, 0 ) > 0 AND CEILING ( QOE.EngGCSEPoints ) < CLT.Value THEN CLV.Value
+								WHEN CEILING ( QOE.EngGCSEPoints ) + COALESCE ( CIT.Value, 1 ) > 9 THEN 9 --Ensure value does not go above 9
+								ELSE CEILING ( QOE.EngGCSEPoints ) + COALESCE ( CIT.Value, 1 )
 							END
 						AND ENG.QualType = 'G'
 						AND ENG.Grade BETWEEN '1' AND '9'
@@ -926,21 +939,27 @@ BEGIN
 						ON AIM.LEARNING_AIM_REF = CRS.QualID
 					LEFT JOIN #QOEs QOE
 						ON QOE.StudentDetailID = ENR.StudentDetailID
+					LEFT JOIN Config CLV
+						ON CLV.ConfigID = 'PMO_GCSEGradeImprovementMin'
+					LEFT JOIN Config CLT
+						ON CLV.ConfigID = 'PMO_GCSEGradeImprovementTrigger'
+					LEFT JOIN Config CIT
+						ON CIT.ConfigID = 'PMO_GCSEGradeImprovementTarget'
 					LEFT JOIN GradePoints MAT
 						ON MAT.Points = 
 							CASE
-								WHEN CEILING ( QOE.MathsGCSEPoints ) < 3 THEN 4
-								WHEN CEILING ( QOE.MathsGCSEPoints ) >= 7 THEN 9
-								ELSE CEILING ( QOE.MathsGCSEPoints ) + 2
+								WHEN COALESCE ( CLV.Value, 0 ) > 0 AND COALESCE ( CLT.Value, 0 ) > 0 AND CEILING ( QOE.MathsGCSEPoints ) < CLT.Value THEN CLV.Value
+								WHEN CEILING ( QOE.MathsGCSEPoints ) + COALESCE ( CIT.Value, 1 ) > 9 THEN 9 --Ensure value does not go above 9
+								ELSE CEILING ( QOE.MathsGCSEPoints ) + COALESCE ( CIT.Value, 1 )
 							END
 						AND MAT.QualType = 'G'
 						AND MAT.Grade BETWEEN '1' AND '9'
 					LEFT JOIN GradePoints ENG
 						ON ENG.Points = 
 							CASE
-								WHEN CEILING ( QOE.EngGCSEPoints ) < 3 THEN 4
-								WHEN CEILING ( QOE.EngGCSEPoints ) >= 7 THEN 9
-								ELSE CEILING ( QOE.EngGCSEPoints ) + 2
+								WHEN COALESCE ( CLV.Value, 0 ) > 0 AND COALESCE ( CLT.Value, 0 ) > 0 AND CEILING ( QOE.EngGCSEPoints ) < CLT.Value THEN CLV.Value
+								WHEN CEILING ( QOE.EngGCSEPoints ) + COALESCE ( CIT.Value, 1 ) > 9 THEN 9 --Ensure value does not go above 9
+								ELSE CEILING ( QOE.EngGCSEPoints ) + COALESCE ( CIT.Value, 1 )
 							END
 						AND ENG.QualType = 'G'
 						AND ENG.Grade BETWEEN '1' AND '9'
@@ -1025,21 +1044,27 @@ BEGIN
 						ON AIM.LEARNING_AIM_REF = CRS.QualID
 					LEFT JOIN #QOEs QOE
 						ON QOE.StudentDetailID = ENR.StudentDetailID
+					LEFT JOIN Config CLV
+						ON CLV.ConfigID = 'PMO_GCSEGradeImprovementMin'
+					LEFT JOIN Config CLT
+						ON CLV.ConfigID = 'PMO_GCSEGradeImprovementTrigger'
+					LEFT JOIN Config CIT
+						ON CIT.ConfigID = 'PMO_GCSEGradeImprovementTarget'
 					LEFT JOIN GradePoints MAT
 						ON MAT.Points = 
 							CASE
-								WHEN CEILING ( QOE.MathsGCSEPoints ) < 3 THEN 4
-								WHEN CEILING ( QOE.MathsGCSEPoints ) >= 7 THEN 9
-								ELSE CEILING ( QOE.MathsGCSEPoints ) + 2
+								WHEN COALESCE ( CLV.Value, 0 ) > 0 AND COALESCE ( CLT.Value, 0 ) > 0 AND CEILING ( QOE.MathsGCSEPoints ) < CLT.Value THEN CLV.Value
+								WHEN CEILING ( QOE.MathsGCSEPoints ) + COALESCE ( CIT.Value, 1 ) > 9 THEN 9 --Ensure value does not go above 9
+								ELSE CEILING ( QOE.MathsGCSEPoints ) + COALESCE ( CIT.Value, 1 )
 							END
 						AND MAT.QualType = 'G'
 						AND MAT.Grade BETWEEN '1' AND '9'
 					LEFT JOIN GradePoints ENG
 						ON ENG.Points = 
 							CASE
-								WHEN CEILING ( QOE.EngGCSEPoints ) < 3 THEN 4
-								WHEN CEILING ( QOE.EngGCSEPoints ) >= 7 THEN 9
-								ELSE CEILING ( QOE.EngGCSEPoints ) + 2
+								WHEN COALESCE ( CLV.Value, 0 ) > 0 AND COALESCE ( CLT.Value, 0 ) > 0 AND CEILING ( QOE.EngGCSEPoints ) < CLT.Value THEN CLV.Value
+								WHEN CEILING ( QOE.EngGCSEPoints ) + COALESCE ( CIT.Value, 1 ) > 9 THEN 9 --Ensure value does not go above 9
+								ELSE CEILING ( QOE.EngGCSEPoints ) + COALESCE ( CIT.Value, 1 )
 							END
 						AND ENG.QualType = 'G'
 						AND ENG.Grade BETWEEN '1' AND '9'
@@ -1126,7 +1151,8 @@ BEGIN
 		SELECT
 			StudentID = QOE.StudentID,
 			NumGCSEs = COUNT ( QOE.StudentID ),
-			AvgGCSE = ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( COUNT ( QOE.StudentID ) AS FLOAT ), 2 )
+			TotalSize = SUM ( QOE.GradeSize ),
+			AvgGCSE = CAST ( ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( SUM ( QOE.GradeSize ) AS FLOAT ), 2 ) AS DECIMAL (10, 2) )
 		FROM (
 			SELECT DISTINCT
 				PLR.StudentID,
@@ -1135,6 +1161,16 @@ BEGIN
 				PLRD.AwardDate,
 				PLRD.Grade,
 				GP.Points,
+				GradeSize = 
+					CASE
+						WHEN PLRD.QualificationTitle LIKE '%Short%' THEN 0.5
+						WHEN PLRD.QualificationTitle LIKE '%Double%' THEN 2.0
+						WHEN PLRD.QualificationTitle LIKE '%Triple%' THEN 3.0
+						WHEN LEN ( REPLACE ( PLRD.Grade, '*', '' ) ) = 2 THEN 2.0
+						WHEN LEN ( REPLACE ( PLRD.Grade, '*', '' ) ) = 3 THEN 3.0
+						WHEN LEN ( REPLACE ( PLRD.Grade, '*', '' ) ) = 4 THEN 4.0
+						ELSE 1.0
+					END,
 				GradeOrder = 
 					ROW_NUMBER () OVER ( 
 						PARTITION BY 
@@ -1153,7 +1189,7 @@ BEGIN
 			INNER JOIN ProSolution.dbo.PLRLearnerEventDownload PLRD
 				ON PLRD.PLRDownloadID = PLR.PLRDownloadID
 			INNER JOIN #EarliestStart EAR
-				ON EAR.StudentID = PLR.StudentID
+				ON EAR.StudentDetailID = SD.StudentDetailID
 			INNER JOIN GradePoints GP
 				ON GP.Grade = PLRD.Grade
 				AND GP.QualType = 'G'
@@ -1181,6 +1217,72 @@ BEGIN
 			QOE.StudentID
 	) PLR
 		ON PLR.StudentID = SD.StudentID
+	LEFT JOIN (
+		SELECT
+			StudentID = QOE.StudentID,
+			NumGCSEs = COUNT ( QOE.StudentID ),
+			AvgGCSE = CAST ( ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( SUM ( QOE.GradeSize ) AS FLOAT ), 2 ) AS DECIMAL (10, 2) )
+		FROM (
+			SELECT
+				StudentID = SD.StudentID,
+				AimCode = QOE.QualCode,
+				AimTitle = COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ),
+				Grade =  QOE.Grade,
+				Points = GP.Points,
+				GradeSize = 
+					CASE
+						WHEN COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%Short%' THEN 0.5
+						WHEN COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%Double%' THEN 2.0
+						WHEN COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%Triple%' THEN 3.0
+						WHEN LEN ( REPLACE ( QOE.Grade, '*', '' ) ) = 2 THEN 2.0
+						WHEN LEN ( REPLACE ( QOE.Grade, '*', '' ) ) = 3 THEN 3.0
+						WHEN LEN ( REPLACE ( QOE.Grade, '*', '' ) ) = 4 THEN 4.0
+						ELSE 1.0
+					END,
+				GradeOrder = 
+					ROW_NUMBER () OVER ( 
+						PARTITION BY 
+							SD.StudentID, 
+							QOE.QualCode
+						ORDER BY 
+							CASE
+								WHEN QOE.Grade = 'A*' THEN 1
+								ELSE 2
+							END,
+							QOE.Grade 
+					)
+			FROM ProSolution.dbo.StudentDetail SD
+			INNER JOIN ProSolution.dbo.QualsOnEntry QOE
+				ON QOE.StudentID = SD.StudentID
+			INNER JOIN #EarliestStart EAR
+				ON EAR.StudentDetailID = SD.StudentDetailID
+			LEFT JOIN ProSolution.dbo.QualsOnEntryAvailableQuals QOEQ
+				ON QOEQ.Code = QOE.QualCode
+			INNER JOIN GradePoints GP
+				ON GP.Grade = QOE.Grade
+				AND GP.QualType = 'G'
+			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
+				ON AIM.LEARNING_AIM_REF = QOE.QualCode
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'ALP_AcademicYearID'
+				)
+				AND QOE.EvidenceSeen = 1
+				AND COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%GCSE%'
+				AND COALESCE ( QOE.DateAwarded, EAR.EarliestStartDate ) <= EAR.EarliestStartDate
+				AND QOE.Grade IS NOT NULL
+		) QOE
+		WHERE
+			QOE.GradeOrder = 1
+			--AND QOE.StudentID = 75672
+		GROUP BY
+			QOE.StudentID
+	) QOE
+		ON QOE.StudentID = SD.StudentID
 	INNER JOIN ALPS_AimTypeMapping ATM
 		ON ATM.LearnAimRefType =
 			CASE
@@ -1192,7 +1294,7 @@ BEGIN
 			END
 	INNER JOIN ALPS_TargetSetting TAR
 		ON TAR.Subject = COALESCE ( ATM.Subject, 'Sub Dip/Ext Cert' )
-		AND PLR.AvgGCSE BETWEEN TAR.MinPoints AND TAR.MaxPoints
+		AND COALESCE ( PLR.AvgGCSE, QOE.AvgGCSE ) BETWEEN TAR.MinPoints AND TAR.MaxPoints
 	INNER JOIN (
 		SELECT
 			RNK1.Subject,
@@ -1223,7 +1325,7 @@ BEGIN
 		AND TAR.TargetGrade IS NOT NULL
 
 	
-	--Other L2 Provision (Exc. GCSE and Functional Skills Maths and English)
+	--Other L2 Pass/Fail Provision (Exc. GCSE and Functional Skills Maths and English)
 	UNION ALL
 
 	SELECT  
@@ -1232,7 +1334,7 @@ BEGIN
 		UniqueID = ENR.EnrolmentID,
 		TargetPercent = '100',
 		TargetGrade1 = NULL,
-		TargetGrade2 = 'P', --Re-label and check if should be target 1 or 2
+		TargetGrade2 = GTA.Value, --Re-label and check if should be target 1 or 2
 		Points = '100.00'
 	FROM ProSolution.dbo.StudentDetail SD
 	INNER JOIN ProSolution.dbo.Enrolment ENR
@@ -1241,6 +1343,8 @@ BEGIN
 		ON CRS.OfferingID = ENR.OfferingID
 	INNER JOIN ProSolution.dbo.Learning_Aim AIM
 		ON AIM.LEARNING_AIM_REF = CRS.QualID
+	INNER JOIN Config GTA
+		ON GTA.ConfigID = 'PMO_SetTargetsL2PassFailGrade'
 	LEFT JOIN (
 		--Exclude L2 courses with any merit or distinction marks in the system
 		SELECT DISTINCT 
@@ -1302,6 +1406,91 @@ BEGIN
 				OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
 			)
 		)
+		AND COALESCE ( GTA.Value, '' ) <> ''
+
+	
+	--Other L2 Pass/Merit/Distinction Provision (Exc. GCSE and Functional Skills Maths and English)
+	UNION ALL
+
+	SELECT  
+		LearnerRef = SD.RefNo,
+		CourseCode = CRS.Code,
+		UniqueID = ENR.EnrolmentID,
+		TargetPercent = '100',
+		TargetGrade1 = NULL,
+		TargetGrade2 = GTA.Value, --Re-label and check if should be target 1 or 2
+		Points = '100.00'
+	FROM ProSolution.dbo.StudentDetail SD
+	INNER JOIN ProSolution.dbo.Enrolment ENR
+		ON ENR.StudentDetailID = SD.StudentDetailID
+	INNER JOIN ProSolution.dbo.Offering CRS
+		ON CRS.OfferingID = ENR.OfferingID
+	INNER JOIN ProSolution.dbo.Learning_Aim AIM
+		ON AIM.LEARNING_AIM_REF = CRS.QualID
+	INNER JOIN Config GTA
+		ON GTA.ConfigID = 'PMO_SetTargetsL2PMDGrade'
+	LEFT JOIN (
+		--Exclude L2 courses with any merit or distinction marks in the system
+		SELECT DISTINCT 
+			CRS.QualID
+		FROM ProSolution.dbo.StudentDetail SD
+		INNER JOIN ProSolution.dbo.Enrolment ENR
+			ON ENR.StudentDetailID = SD.StudentDetailID
+		INNER JOIN ProSolution.dbo.Offering CRS
+			ON CRS.OfferingID = ENR.OfferingID
+		INNER JOIN ProSolution.dbo.Learning_Aim AIM
+			ON AIM.LEARNING_AIM_REF = CRS.QualID
+		WHERE
+			AIM.NVQLevelID_v2 = '2'
+			AND ENR.Grade IN ( 'D', 'DS', 'M', 'ME' )
+	) NPF1
+		ON NPF1.QualID = CRS.QualID
+	LEFT JOIN (
+		--Exclude L2 courses with any merit or distinction marks in the system
+		SELECT DISTINCT 
+			CRS.QualID
+		FROM ProSolution.dbo.StudentDetail SD
+		INNER JOIN ProSolution.dbo.Enrolment ENR
+			ON ENR.StudentDetailID = SD.StudentDetailID
+		INNER JOIN ProSolution.dbo.Offering CRS
+			ON CRS.OfferingID = ENR.OfferingID
+		INNER JOIN ProSolution.dbo.Learning_Aim AIM
+			ON AIM.LEARNING_AIM_REF = CRS.QualID
+		WHERE
+			AIM.NVQLevelID_v2 = '2'
+			AND ENR.Grade IN ( 'A', 'B', 'C', 'D', 'E', 'F', 'G' )
+	) NPF2
+		ON NPF2.QualID = CRS.QualID
+	WHERE
+		SD.AcademicYearID = (
+			SELECT
+				CFG.Value
+			FROM Config CFG
+			WHERE
+				CFG.ConfigID = 'PMO_AcademicYearID'
+		)
+		AND ENR.CompletionStatusID IN ( '1', '2', '3' )
+		AND AIM.NVQLevelID_v2 = '2'
+		AND NPF1.QualID IS NOT NULL
+		AND NPF2.QualID IS NULL
+		AND NOT (
+			( --Eng or Maths
+				COALESCE ( AIM.LEARNING_AIM_TYPE_CODE, '0000' ) IN (
+					'0003',--GCSE
+					'1439'--Func Skills
+				)
+				AND (
+					COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%English%'
+					OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Math%'
+				)
+			)
+			OR ( --ESOL
+				COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%ESOL%'
+				OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Foundations for Learning and Life'
+				OR COALESCE ( AIM.LEARNING_AIM_TITLE, 'X' ) LIKE '%Preparation for Work,%'
+			)
+		)
+		AND COALESCE ( GTA.Value, '' ) <> ''
 
 
 	--GCSE Maths and English

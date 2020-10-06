@@ -1,9 +1,9 @@
 # ALPS Level 3 Target Grade Generator
 **Summary**
 
-These scripts calculate target grade for learners by first working out an Average GCSE Score by taking a mean average of all GCSE results from the PLR and then using this to look at the learning aim type of the level 3 qualification being studied (i.e. A Level, BTEC Extended Diploma, etc.) in order to assign a target grade to the learners.
+These scripts calculate target grade for learners by first working out an Average GCSE Score by taking a mean average of all GCSE results from the PLR using the size of the qualification (short course is 0.5, standard GCSE is 1 and double award is 2) and then using this to look at the learning aim type of the level 3 qualification being studied (i.e. A Level, BTEC Extended Diploma, etc.) in order to assign a target grade to the learners.
 
-> The calculation for average GCSE score is to add up all GCSE grades and then take the mean average (e.g. ( 9 + 7 + 8 + 8 ) / 4 = 8)
+> The calculation for average GCSE score is to add up all GCSE grades and then take the mean average (e.g. for 4 standard size GCSEs ( 9 + 7 + 8 + 8 ) / 4 = 8)
 
 Targets are assigned by looking at the academic and vocational ALPS Benchmarks available from the ALPS Education website at https://alps.education/
 
@@ -61,12 +61,15 @@ Level 2 targets are also now calculated and the methodology for this is as follo
 **For GCSE Maths and English:**
 
 * To establish highest GCSE Maths and English grades look at PLR, QOE, CoF and prior WLC quals and rank and pick highest ones
-* If grade is <3 make target 4
-* If grade is >= 7 make grade 9 (so doesn't end up too high!)
-* Otherwise add 2 to grade (e.g. so if grade was 5 then target would be 7)
+* If grade is < [VALUE IN CONFIG TABLE] make target [VALUE IN CONFIG TABLE]
+* Otherwise add + [VALUE IN CONFIG TABLE] grades to grade (e.g. so if grade was 5 then target would be 6 or 7 depending on values set)
 
 
 **For Other Level 2s that are Pass/Fail**
 * To establish that course is pass/fail exclude any aims where we have previously graded as M and D in any year or A - G in any year
 * Aim is level 2
 * Aim type is not GCSE
+
+**For Other Level 2s that are P/M/D**
+* Set target to [VALUE IN CONFIG TABLE]
+* If value in config table is NULL then this part is disabled

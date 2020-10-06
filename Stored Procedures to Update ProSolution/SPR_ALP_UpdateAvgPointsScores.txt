@@ -3,34 +3,43 @@ Inserts the Average GCSE Score (used by ALPS) into StudentDetail UserDefined23
 Ensure this field does not contain existing data and, if it does, switch to using another vacant field
 */
 
-CREATE PROCEDURE SPR_ALP_UpdateAvgPointsScores
+CREATE PROCEDURE [dbo].[SPR_ALP_UpdateAvgPointsScores]
 AS
 BEGIN
 	SET NOCOUNT ON;
 
 	DROP TABLE IF EXISTS #EarliestStart
 	SELECT
-		SD.StudentID,
+		SD.StudentDetailID,
 		EarliestStartDate = MIN ( ENR.StartDate )
 		INTO #EarliestStart
 	FROM ProSolution.dbo.StudentDetail SD
 	INNER JOIN ProSolution.dbo.Enrolment ENR
 		ON ENR.StudentDetailID = SD.StudentDetailID
 	WHERE
-		ENR.CompletionStatusID IN ( '1', '2', '3' )
+		SD.AcademicYearID = (
+			SELECT
+				CFG.Value
+			FROM Config CFG
+			WHERE
+				CFG.ConfigID = 'PMO_AcademicYearID'
+		)
+		AND ENR.CompletionStatusID IN ( '1', '2', '3', '4' )
 		AND ENR.IncludeInReturn = 1
 	GROUP BY
-		SD.StudentID
+		SD.StudentDetailID
+
 
 	UPDATE SD
 	SET
-		SD.UserDefined23 = FORMAT ( PLR.AvgGCSE, '#0.00' )
+		SD.UserDefined23 = FORMAT ( COALESCE ( PLR.AvgGCSE, QOE.AvgGCSE ), '#0.00' )
 	FROM ProSolution.dbo.StudentDetail SD
-	INNER JOIN (
+	LEFT JOIN (
 		SELECT
 			StudentID = QOE.StudentID,
 			NumGCSEs = COUNT ( QOE.StudentID ),
-			AvgGCSE = ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( COUNT ( QOE.StudentID ) AS FLOAT ), 2 )
+			TotalSize = SUM ( QOE.GradeSize ),
+			AvgGCSE = CAST ( ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( SUM ( QOE.GradeSize ) AS FLOAT ), 2 ) AS DECIMAL (10, 2) )
 		FROM (
 			SELECT DISTINCT
 				PLR.StudentID,
@@ -39,6 +48,16 @@ BEGIN
 				PLRD.AwardDate,
 				PLRD.Grade,
 				GP.Points,
+				GradeSize = 
+					CASE
+						WHEN PLRD.QualificationTitle LIKE '%Short%' THEN 0.5
+						WHEN PLRD.QualificationTitle LIKE '%Double%' THEN 2.0
+						WHEN PLRD.QualificationTitle LIKE '%Triple%' THEN 3.0
+						WHEN LEN ( REPLACE ( PLRD.Grade, '*', '' ) ) = 2 THEN 2.0
+						WHEN LEN ( REPLACE ( PLRD.Grade, '*', '' ) ) = 3 THEN 3.0
+						WHEN LEN ( REPLACE ( PLRD.Grade, '*', '' ) ) = 4 THEN 4.0
+						ELSE 1.0
+					END,
 				GradeOrder = 
 					ROW_NUMBER () OVER ( 
 						PARTITION BY 
@@ -57,7 +76,7 @@ BEGIN
 			INNER JOIN ProSolution.dbo.PLRLearnerEventDownload PLRD
 				ON PLRD.PLRDownloadID = PLR.PLRDownloadID
 			INNER JOIN #EarliestStart EAR
-				ON EAR.StudentID = PLR.StudentID
+				ON EAR.StudentDetailID = SD.StudentDetailID
 			INNER JOIN GradePoints GP
 				ON GP.Grade = PLRD.Grade
 				AND GP.QualType = 'G'
@@ -77,7 +96,6 @@ BEGIN
 				)
 				AND PLRD.AwardDate IS NOT NULL
 				AND PLRD.AwardDate < EAR.EarliestStartDate
-				--AND SD.RefNo = '863769'
 		) QOE
 		WHERE
 			QOE.GradeOrder = 1
@@ -86,6 +104,72 @@ BEGIN
 			QOE.StudentID
 	) PLR
 		ON PLR.StudentID = SD.StudentID
+	LEFT JOIN (
+		SELECT
+			StudentID = QOE.StudentID,
+			NumGCSEs = COUNT ( QOE.StudentID ),
+			AvgGCSE = CAST ( ROUND ( CAST ( SUM ( QOE.Points ) AS FLOAT ) / CAST ( SUM ( QOE.GradeSize ) AS FLOAT ), 2 ) AS DECIMAL (10, 2) )
+		FROM (
+			SELECT
+				StudentID = SD.StudentID,
+				AimCode = QOE.QualCode,
+				AimTitle = COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ),
+				Grade =  QOE.Grade,
+				Points = GP.Points,
+				GradeSize = 
+					CASE
+						WHEN COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%Short%' THEN 0.5
+						WHEN COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%Double%' THEN 2.0
+						WHEN COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%Triple%' THEN 3.0
+						WHEN LEN ( REPLACE ( QOE.Grade, '*', '' ) ) = 2 THEN 2.0
+						WHEN LEN ( REPLACE ( QOE.Grade, '*', '' ) ) = 3 THEN 3.0
+						WHEN LEN ( REPLACE ( QOE.Grade, '*', '' ) ) = 4 THEN 4.0
+						ELSE 1.0
+					END,
+				GradeOrder = 
+					ROW_NUMBER () OVER ( 
+						PARTITION BY 
+							SD.StudentID, 
+							QOE.QualCode
+						ORDER BY 
+							CASE
+								WHEN QOE.Grade = 'A*' THEN 1
+								ELSE 2
+							END,
+							QOE.Grade 
+					)
+			FROM ProSolution.dbo.StudentDetail SD
+			INNER JOIN ProSolution.dbo.QualsOnEntry QOE
+				ON QOE.StudentID = SD.StudentID
+			INNER JOIN #EarliestStart EAR
+				ON EAR.StudentDetailID = SD.StudentDetailID
+			LEFT JOIN ProSolution.dbo.QualsOnEntryAvailableQuals QOEQ
+				ON QOEQ.Code = QOE.QualCode
+			INNER JOIN GradePoints GP
+				ON GP.Grade = QOE.Grade
+				AND GP.QualType = 'G'
+			LEFT JOIN ProSolution.dbo.Learning_Aim AIM
+				ON AIM.LEARNING_AIM_REF = QOE.QualCode
+			WHERE
+				SD.AcademicYearID = (
+					SELECT
+						CFG.Value
+					FROM Config CFG
+					WHERE
+						CFG.ConfigID = 'ALP_AcademicYearID'
+				)
+				AND QOE.EvidenceSeen = 1
+				AND COALESCE ( AIM.LEARNING_AIM_TITLE, QOEQ.Title, QOE.Subject ) LIKE '%GCSE%'
+				AND COALESCE ( QOE.DateAwarded, EAR.EarliestStartDate ) <= EAR.EarliestStartDate
+				AND QOE.Grade IS NOT NULL
+		) QOE
+		WHERE
+			QOE.GradeOrder = 1
+			--AND QOE.StudentID = 75672
+		GROUP BY
+			QOE.StudentID
+	) QOE
+		ON QOE.StudentID = SD.StudentID
 	WHERE
 		SD.AcademicYearID = (
 			SELECT
@@ -94,5 +178,5 @@ BEGIN
 			WHERE
 				CFG.ConfigID = 'PMO_AcademicYearID'
 		)
-		AND COALESCE ( SD.UserDefined23, '' ) <> COALESCE ( FORMAT ( PLR.AvgGCSE, '#0.00' ), '' ) --Not already recorded
+		AND COALESCE ( SD.UserDefined23, '' ) <> COALESCE ( FORMAT ( COALESCE ( PLR.AvgGCSE, QOE.AvgGCSE ), '#0.00' ), '' ) --Not already recorded
 END
